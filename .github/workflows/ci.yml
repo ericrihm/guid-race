@@ -1,0 +1,45 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Makefile)
+        run: make
+      - name: Run correctness tests
+        run: ./guid_race 2>&1 | head -20
+      - name: Build (CMake)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Run CMake build
+        run: ./build/guid_race 2>&1 | head -20
+
+  build-ubuntu-x86:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (CMake)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Run correctness tests
+        run: ./build/guid_race 2>&1 | head -20
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (CMake + MSVC)
+        run: |
+          cmake -B build
+          cmake --build build --config Release
+      - name: Run correctness tests
+        run: build\Release\guid_race.exe 2>&1 | Select-Object -First 20

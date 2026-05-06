@@ -1,0 +1,23 @@
+# Build outputs
+guid_race
+build/
+*.o
+*.obj
+*.exe
+*.dSYM/
+
+# IDE
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Profiling
+*.trace
+
+# Claude Code
+.claude/
