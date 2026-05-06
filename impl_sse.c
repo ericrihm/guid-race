@@ -92,8 +92,9 @@ void guid_ssse3_scatter(const IID *iid, char *out)
     _mm_storeu_si128((__m128i *)(out + 16), out2);
 
     // Tail: hex_hi16[12..15] -> positions 32-35
-    // Extract as 32-bit int and store
-    uint32_t tail = (uint32_t)_mm_extract_epi32(hex_hi16, 3);
+    // Use shuffle + cvtsi128 (SSSE3-safe, no SSE4.1 _mm_extract_epi32)
+    __m128i tail_vec = _mm_shuffle_epi32(hex_hi16, _MM_SHUFFLE(3,3,3,3));
+    uint32_t tail = (uint32_t)_mm_cvtsi128_si32(tail_vec);
     memcpy(out + 32, &tail, 4);
     out[36] = '\0';
 }

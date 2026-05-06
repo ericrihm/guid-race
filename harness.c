@@ -65,8 +65,8 @@ static impl_entry impls[] = {
     { "neon_tbl2     ", guid_neon_tbl2 },
     { "neon_scatter  ", guid_neon_scatter },
     { "neon_arith    ", guid_neon_arith },
-    { "NEON_ULTIMATE ", guid_neon_ultimate },
-    { "NEON_FUSED    ", guid_neon_fused },
+    { "neon_ultimate ", guid_neon_ultimate },
+    { "neon_fused    ", guid_neon_fused },
 #endif
 
 #if defined(HAS_SSE) || defined(__x86_64__) || defined(_M_X64)
@@ -169,9 +169,11 @@ static void benchmark(void)
     printf("%-16s %10s %10s %10s %10s %12s\n",
            "----------------", "--------", "----------", "--------", "------", "----------");
 
-    double baseline_ns = 0, dave_ns = 0;
+    int num_impls = 0;
+    while (impls[num_impls].name) num_impls++;
+    double *medians = (double *)calloc((size_t)num_impls, sizeof(double));
 
-    for (int impl = 0; impls[impl].name; impl++) {
+    for (int impl = 0; impl < num_impls; impl++) {
         guid_fn fn = impls[impl].fn;
 
         for (int i = 0; i < WARMUP_ITERS; i++)
@@ -180,8 +182,12 @@ static void benchmark(void)
         double samples[NUM_SAMPLES];
         for (int s = 0; s < NUM_SAMPLES; s++) {
             uint64_t start = timer_now();
-            for (int i = 0; i < BENCH_ITERS; i++)
+            for (int i = 0; i < BENCH_ITERS; i++) {
                 fn(&test_guids[i & (NUM_GUIDS-1)], buf);
+#if defined(__GNUC__) || defined(__clang__)
+                __asm__ volatile("" : : "r"(buf) : "memory");
+#endif
+            }
             uint64_t end = timer_now();
             samples[s] = timer_ns(start, end) / BENCH_ITERS;
         }
@@ -195,39 +201,22 @@ static void benchmark(void)
         for (int s = 0; s < NUM_SAMPLES; s++) mean_ns += samples[s];
         mean_ns /= NUM_SAMPLES;
 
-        if (impl == 0) baseline_ns = median_ns;
-        if (impl == 1) dave_ns = median_ns;
+        medians[impl] = median_ns;
 
         printf("%-16s %10.2f %10.2f %10.2f %10.2f %12.0f\n",
                impls[impl].name, min_ns, median_ns, mean_ns, p99_ns, 1e9 / median_ns);
     }
 
-    // Speedup table
+    // Speedup tables (using stored medians for consistency)
     printf("\n--- SPEEDUP vs sprintf ---\n");
-    for (int impl = 1; impls[impl].name; impl++) {
-        guid_fn fn = impls[impl].fn;
-        for (int i = 0; i < WARMUP_ITERS; i++)
-            fn(&test_guids[i & (NUM_GUIDS-1)], buf);
-        uint64_t start = timer_now();
-        for (int i = 0; i < BENCH_ITERS; i++)
-            fn(&test_guids[i & (NUM_GUIDS-1)], buf);
-        uint64_t end = timer_now();
-        double impl_ns = timer_ns(start, end) / BENCH_ITERS;
-        printf("  %s: %.1fx faster\n", impls[impl].name, baseline_ns / impl_ns);
-    }
+    for (int impl = 1; impl < num_impls; impl++)
+        printf("  %s: %.1fx faster\n", impls[impl].name, medians[0] / medians[impl]);
 
     printf("\n--- SPEEDUP vs Dave's original ---\n");
-    for (int impl = 2; impls[impl].name; impl++) {
-        guid_fn fn = impls[impl].fn;
-        for (int i = 0; i < WARMUP_ITERS; i++)
-            fn(&test_guids[i & (NUM_GUIDS-1)], buf);
-        uint64_t start = timer_now();
-        for (int i = 0; i < BENCH_ITERS; i++)
-            fn(&test_guids[i & (NUM_GUIDS-1)], buf);
-        uint64_t end = timer_now();
-        double impl_ns = timer_ns(start, end) / BENCH_ITERS;
-        printf("  %s: %.2fx faster\n", impls[impl].name, dave_ns / impl_ns);
-    }
+    for (int impl = 2; impl < num_impls; impl++)
+        printf("  %s: %.2fx faster\n", impls[impl].name, medians[1] / medians[impl]);
+
+    free(medians);
 }
 
 int main(int argc, char **argv)

@@ -19,6 +19,7 @@ The secret: ARM NEON's `vqtbl3q` instruction builds the entire output string -- 
 | neon_ultimate | 1.13 | 5.0x | 166x | ~885M |
 | neon_arith | 1.50 | 3.7x | 125x | ~667M |
 | neon_simd | 1.89 | 2.9x | 98x | ~530M |
+| neon_tbl2 | 1.89 | 2.9x | 98x | ~530M |
 | lookup16 | 3.40 | 1.6x | 55x | ~294M |
 | **dave_original** | **5.55** | **1.0x** | **33x** | **~180M** |
 | unrolled | 6.48 | 0.86x | 29x | ~154M |
@@ -78,9 +79,9 @@ vst1q_u8(out + 16, vqtbl3q_u8(tbl, scatter2));  // output[16..31]
 
 **Hyphens emerge naturally from the scatter topology** -- exactly the "elegant branchless trick" Dave was hoping existed.
 
-### The Assembly (17 Instructions Total)
+### The Assembly (17 Data-Path Instructions)
 
-Clang -O3 compiles `neon_scatter` to just 17 ARM instructions:
+Clang -O3 compiles the core data path of `neon_scatter` to 17 ARM NEON instructions (plus address generation and tail handling):
 
 ```asm
 ldr    q0, [x0]              ; load 16-byte GUID
