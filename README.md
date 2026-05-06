@@ -50,15 +50,6 @@ for (i = 0; i < 16; i++) {
 }
 ```
 
-The `order` array handles the GUID's split personality -- three little-endian integers followed by raw bytes:
-
-```
-Memory layout:  04 03 02 01 | 06 05 | 08 07 | 09 0A  0B 0C 0D 0E 0F 10
-                └─ Data1 LE ┘ └ D2 ┘  └ D3 ┘  └──── Data4 (as-is) ────┘
-                    ↕ swap      ↕       ↕
-Canonical form: 01020304     - 0506  - 0708  - 090A - 0B0C0D0E0F10
-```
-
 This is clean, correct, and ~33x faster than `sprintf`. But it has three costs:
 1. **Two table lookups per byte** (32 total)
 2. **A branch for hyphen insertion** (checked 16 times, taken 4 times)
@@ -89,16 +80,6 @@ vst1q_u8(out + 16, vqtbl3q_u8(tbl, scatter2));  // output[16..31]
 ```
 
 **Hyphens emerge naturally from the scatter topology** -- exactly the "elegant branchless trick" Dave was hoping existed.
-
-```
-Output: 01020304-0506-0708-090a-0b0c0d0e0f10
-Source: 00000000 0000 0000 1111 111111111111
-                ^    ^    ^    ^
-                └─────── 2 ───┘
-
-0 = register 0 (first 16 hex chars)    2 = register 2 (hyphens)
-1 = register 1 (last 16 hex chars)
-```
 
 The trick relies on a non-obvious guarantee: the `q` in `vqtbl3q` means indices >= 48 (outside the 3-register table) return **zero**, not garbage. Every output byte is either a valid hex character or a valid hyphen. There's no error path because there's no error.
 
@@ -203,8 +184,6 @@ Dave replaced it with a nibble walker: read each byte, index into a hex table tw
 30 years later, we have SIMD. The same insight Dave had -- "this is a fixed encoding problem, not a formatting problem" -- extends one step further: it's a *parallel* fixed encoding problem. Every byte is independent. Every nibble maps the same way. The output layout is constant. This is exactly what vector shuffle instructions were designed for.
 
 Dave's code was written for 32-bit x86 in the early 1990s, before SIMD existed on consumer hardware. Comparing it to ARM NEON on Apple Silicon in 2026 isn't an apples-to-apples contest -- it's a demonstration of how far hardware has come. The nibble walker remains an excellent scalar solution.
-
-The most frequently serialized IID in COM history is probably IUnknown itself: `00000000-0000-0000-C000-000000000046`.
 
 ## Prior Art
 
