@@ -4,7 +4,7 @@ A response to [Dave Plummer's challenge](https://www.youtube.com/watch?v=VYTF4KI
 
 > "If you can think of a faster way to do it, let me know in the comments."
 
-**We found one. It's 5x faster than Dave's nibble walker on ARM, and ~180x faster than `sprintf`.**
+**Here's one. Using ARM NEON vector instructions, it's 5x faster than the nibble walker on Apple M4, and ~180x faster than `sprintf`.**
 
 The secret: ARM NEON's `vqtbl3q` instruction builds the entire output string -- hex characters, hyphens, and all -- in a single 3-register table lookup. Hyphens aren't checked or inserted; they're *free*, just another index in the scatter table.
 
@@ -28,10 +28,12 @@ The secret: ARM NEON's `vqtbl3q` instruction builds the entire output string -- 
 | sprintf | 188 | 0.03x | 1.0x | ~5.3M |
 
 > Methodology: 10M iterations x 11 samples, median reported. 256 random GUIDs cycled through (warm L1). Apple M4, clang -O3 -march=native.
+>
+> Output uses lowercase hex. Windows `StringFromGUID2` uses uppercase with braces; Dave's original likely did too.
 
 ## How It Works
 
-### Dave's Original (the baseline to beat)
+### Dave's Original (our baseline)
 
 From the video, Dave's optimized version replaces `sprintf` with a nibble walker:
 
@@ -79,6 +81,8 @@ vst1q_u8(out + 16, vqtbl3q_u8(tbl, scatter2));  // output[16..31]
 
 **Hyphens emerge naturally from the scatter topology** -- exactly the "elegant branchless trick" Dave was hoping existed.
 
+The trick relies on a non-obvious guarantee: the `q` in `vqtbl3q` means indices >= 48 (outside the 3-register table) return **zero**, not garbage. Every output byte is either a valid hex character or a valid hyphen. There's no error path because there's no error.
+
 ### The Assembly (17 Data-Path Instructions)
 
 Clang -O3 compiles the core data path of `neon_scatter` to 17 ARM NEON instructions (plus address generation and tail handling):
@@ -104,7 +108,7 @@ stp    q0, q1, [x1]          ; store both chunks (32 bytes!)
 ; + 3 instructions for tail (4 hex chars + null terminator)
 ```
 
-The compiler even merges both 16-byte stores into a single `stp` (store pair) instruction.
+The compiler recognizes two adjacent 16-byte stores (`out` and `out+16`) and fuses them into a single `stp` (store pair) -- one micro-op instead of two, writing all 32 bytes in a single cycle.
 
 ## All Implementations
 
@@ -129,11 +133,25 @@ The compiler even merges both 16-byte stores into a single `stp` (store pair) in
 
 1. **Scalar unrolled is *slower* than Dave's loop.** The M4's branch predictor handles Dave's `if` perfectly -- the pattern is fixed and short. Unrolling adds code size without reducing work.
 
-2. **`vqtbl3q` beats `vqtbl4q`.** The 3-register table lookup has lower latency than the 4-register version on Apple Silicon. Using `zip` + `tbl3` beats skipping `zip` with `tbl4`.
+2. **`vqtbl3q` beats `vqtbl4q` -- the micro-op cliff explains it.** On Apple Firestorm ([measured by Dougall Johnson](https://dougallj.github.io/applecpu/firestorm/)), `tbl` with 1-2 source registers is 1 uop / 2-cycle latency. At 3 registers: 2 uops / 4 cycles. At 4 registers: 3 uops / 4 cycles -- same latency but 50% worse throughput. `neon_ultimate` saves 2 `zip` instructions (2 uops) by using `tbl4`, but each of its two `tbl4` calls costs 1 extra uop vs `tbl3`. Net loss: 2 uops. The `zip` + `tbl3` path wins because `zip` is cheap (1 uop each) and `tbl3` has better throughput than `tbl4`.
 
 3. **The hex LUT beats arithmetic.** Despite `neon_arith` avoiding a memory load, the `tbl` instruction used as a 16-entry lookup table is faster than the `vcgt` + `vand` + `vadd` arithmetic chain.
 
 4. **`lookup16` is the best scalar approach.** A 256-entry uint16 table (512 bytes, fits in L1) halves the lookup count and enables 16-bit stores. This is the approach to use if you can't use SIMD.
+
+5. **We're near the floor.** The transform maps 128 input bits to 37 output bytes. Each input bit influences exactly one output nibble -- no fan-out, no carry propagation, embarrassingly parallel at the bit level. The irreducible work: 1 load, 2 nibble splits, 2 hex maps, 2 interleaves, 2 scatters, 2 stores = 11 ops. `neon_fused` compiles to 16 data-path instructions (1.45x the floor). The gap is GUID endian reorder, constant materialization, and the tail store.
+
+## The Shuffle Lineage
+
+Intel's `pshufb` (SSSE3, 2006) was the first byte-granularity permutation on x86 -- a single instruction that could rearrange any of 16 bytes. The entire hex-encoding-via-SIMD technique traces back to [Wojciech Mula's nibble lookup](http://0x80.pl/notesen/2022-01-18-conv-to-hex.html) using `pshufb` as a 16-entry table.
+
+ARM's `tbl`/`tbx` instructions (ARMv8, 2013) generalize the concept: variable-width source tables (1-4 registers = 16-64 bytes), and crucially, **defined behavior on out-of-range indices** -- `tbl` zeros them, `tbx` preserves the destination. This is what makes our scatter trick possible: the same instruction that does hex lookup also places hyphens, because any index pointing at register 2 (the hyphen register) is in-range. `pshufb` has similar zeroing behavior (via bit 7), but only over a single 16-byte register -- not enough for a 3-register scatter.
+
+## Limitations
+
+- Benchmarks measure warm-cache throughput (256 GUIDs cycle through L1). Real-world latency with cold caches will be higher.
+- NEON implementations require ARMv8-A. The x86 `ssse3_scatter` uses the same principle but requires SSSE3 (Core 2 or later).
+- The `neon_scatter` and `neon_fused` results are within measurement noise of each other (~0.01ns). Treat them as tied.
 
 ## Building
 
@@ -165,12 +183,16 @@ Dave replaced it with a nibble walker: read each byte, index into a hex table tw
 
 30 years later, we have SIMD. The same insight Dave had -- "this is a fixed encoding problem, not a formatting problem" -- extends one step further: it's a *parallel* fixed encoding problem. Every byte is independent. Every nibble maps the same way. The output layout is constant. This is exactly what vector shuffle instructions were designed for.
 
+Dave's code was written for 32-bit x86 in the early 1990s, before SIMD existed on consumer hardware. Comparing it to ARM NEON on Apple Silicon in 2026 isn't an apples-to-apples contest -- it's a demonstration of how far hardware has come. The nibble walker remains an excellent scalar solution.
+
 ## Prior Art
 
 - [crashoz/uuid_v4](https://github.com/crashoz/uuid_v4) -- SSE4.1/AVX2 UUID library
 - [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex) -- AVX2 hex encoding
 - [Daniel Lemire's hex encoding analysis](https://lemire.me/blog/2022/12/23/fast-base16-encoding/)
+- [Wojciech Mula: SIMD hex encoding](http://0x80.pl/notesen/2022-01-18-conv-to-hex.html) -- the foundational `pshufb`-as-LUT technique
 - [johnnylee-sde: Fast unsigned integer to hex string](https://johnnylee-sde.github.io/Fast-unsigned-integer-to-hex-string/)
+- [Dougall Johnson: Apple Silicon CPU features](https://dougallj.github.io/applecpu/firestorm/) -- M1 Firestorm uop measurements
 
 ## License
 
